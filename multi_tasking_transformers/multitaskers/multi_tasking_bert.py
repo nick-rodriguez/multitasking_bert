@@ -2,17 +2,19 @@ import gin, os, torch, logging, mlflow, numpy as np
 from typing import List, Tuple
 from transformers import BertModel, BertConfig, BertTokenizer, CONFIG_NAME, WEIGHTS_NAME
 from multi_tasking_transformers.dataloaders import RoundRobinDataLoader
-from multi_tasking_transformers.heads import TransformerHead, SubwordClassificationHead,\
+from multi_tasking_transformers.heads import TransformerHead, SubwordClassificationHead, \
     CLSRegressionHead, CLSClassificationHead
 
 from multi_tasking_transformers.evaluation import evaluate_ner, evaluate_sts, evaluate_classification
 from torch.utils.data import DataLoader
 from torch.nn.functional import softmax
 import torch
+
 # import torch.multiprocessing
 # torch.multiprocessing.set_sharing_strategy('file_system')
 
 log = logging.getLogger('root')
+
 
 class MultiTaskingBert():
 
@@ -27,7 +29,7 @@ class MultiTaskingBert():
                  transformer_layers=12,
                  use_pretrained_heads=True):
         """
-        
+
         :param model_directory: a directory path to the multi-tasking model. This contains bert weights and head weights.
         """
         self.transformer_weights = transformer_weights
@@ -59,7 +61,7 @@ class MultiTaskingBert():
                     log.info(f"Loading pretrained head: {head}")
                 else:
                     log.info(f"Training new head: {head}")
-                if getattr(head, '_init_mlm_head', None): #lm heads required bert model configurations.
+                if getattr(head, '_init_mlm_head', None):  # lm heads required bert model configurations.
                     head._init_mlm_head(config)
             else:
                 log.info(f"Training new head: {head}")
@@ -72,7 +74,6 @@ class MultiTaskingBert():
             weight_decay=0,
             lr=learning_rate
         )
-
 
     def save_checkpoint(self, checkpoint_path: str):
         """
@@ -92,22 +93,20 @@ class MultiTaskingBert():
         log.info(f"Saving checkpoint: {checkpoint_path}")
         base = self.bert
 
-        #Save base model
+        # Save base model
         torch.save(base.state_dict(), os.path.join(checkpoint_path, WEIGHTS_NAME))
         base.config.to_json_file(os.path.join(checkpoint_path, CONFIG_NAME))
         self.bert_tokenizer.save_vocabulary(checkpoint_path)
 
-        #Save heads
+        # Save heads
         for head in self.heads:
             head.save(os.path.join(checkpoint_path))
-
-
 
     def fit(self,
             heads_and_dataloaders: List[Tuple[TransformerHead, DataLoader, DataLoader]],
             num_epochs=1,
-            evaluation_interval = 1,
-            checkpoint_interval = 1,
+            evaluation_interval=1,
+            checkpoint_interval=1,
             repeat_in_epoch_sampling=True,
             use_loss_weight=False,
             in_epoch_logging_and_saving=False):
@@ -126,20 +125,19 @@ class MultiTaskingBert():
             head.to(device=self.device)
             head.train()
 
-
-        for epoch in range(1,num_epochs+1):
+        for epoch in range(1, num_epochs + 1):
             # #TODO REMOVE ME
             # if epoch == evaluation_interval:
             #     self.predict([(head, test_loader) for head,_ , test_loader in heads_and_dataloaders])
 
-            self.epoch+=1
+            self.epoch += 1
 
             task_epoch_loss = {str(head): 0.0 for head in self.heads}
             # depending on round robin scheme, some tasks maybe passed more than once. we must keep count.
             task_batches = {str(head): 0 for head in self.heads}
 
             for training_batch_idx, (head, dataset_batch_idx, batch) in enumerate(train_loader):
-                #log.info(f"{training_batch_idx} {head} {dataset_batch_idx}")
+                # log.info(f"{training_batch_idx} {head} {dataset_batch_idx}")
 
                 if head.__class__.__name__ == "SubwordClassificationHead":
                     bert_input_ids, bert_token_type_ids, bert_attention_masks, \
@@ -147,7 +145,7 @@ class MultiTaskingBert():
 
                     if use_loss_weight:
                         loss_weights = loss_weights[0].to(device=self.device)
-                        #log.info(loss_weights)
+                        # log.info(loss_weights)
                 if head.__class__.__name__ == "MaskedLMHead":
                     bert_input_ids, labels = batch
                     bert_token_type_ids = None
@@ -161,36 +159,37 @@ class MultiTaskingBert():
 
                 bert_input_ids = bert_input_ids.to(device=self.device)
 
-                if isinstance(bert_attention_masks, torch.Tensor): #some tasks (ie. NER) do not need token types.
+                if isinstance(bert_attention_masks, torch.Tensor):  # some tasks (ie. NER) do not need token types.
                     bert_attention_masks = bert_attention_masks.to(device=self.device)
                 else:
                     bert_attention_masks = None
 
-                if isinstance(bert_token_type_ids, torch.Tensor): #some tasks (ie. NER) do not need token types.
+                if isinstance(bert_token_type_ids, torch.Tensor):  # some tasks (ie. NER) do not need token types.
                     bert_token_type_ids = bert_token_type_ids.to(device=self.device)
                 else:
                     bert_token_type_ids = None
 
                 labels = labels.to(device=self.device)
 
-
-                hidden_states, _ , all_hidden = self.bert(bert_input_ids,
-                                    attention_mask = bert_attention_masks,
-                                    token_type_ids = bert_token_type_ids
-                                    )
+                hidden_states, _, all_hidden = self.bert(bert_input_ids,
+                                                         attention_mask=bert_attention_masks,
+                                                         token_type_ids=bert_token_type_ids
+                                                         )
 
                 loss, _ = head(hidden_states, labels=labels, loss_weight=loss_weights)
 
                 if dataset_batch_idx % 5 == 0:
                     log.info(f"|{training_batch_idx}|{dataset_batch_idx}|: {head}, {loss}")
 
-                if in_epoch_logging_and_saving: #useful for language modeling.
-                    if (training_batch_idx+1) % 100 == 0:
-                        mlflow.log_metric(f"{head}/epoch_train_loss", float(task_epoch_loss[str(head)])/task_batches[str(head)], step=training_batch_idx)
+                if in_epoch_logging_and_saving:  # useful for language modeling.
+                    if (training_batch_idx + 1) % 100 == 0:
+                        mlflow.log_metric(f"{head}/epoch_train_loss",
+                                          float(task_epoch_loss[str(head)]) / task_batches[str(head)],
+                                          step=training_batch_idx)
 
-                    if (training_batch_idx+1)  % 16000 == 0:
-                        self.save_checkpoint(os.path.join(self.model_storage_directory, f'{head}_checkpoint_{epoch}_{training_batch_idx+1}'))
-
+                    if (training_batch_idx + 1) % 16000 == 0:
+                        self.save_checkpoint(os.path.join(self.model_storage_directory,
+                                                          f'{head}_checkpoint_{epoch}_{training_batch_idx + 1}'))
 
                 task_epoch_loss[str(head)] += float(loss.item())
                 task_batches[str(head)] += 1
@@ -205,7 +204,7 @@ class MultiTaskingBert():
             log.info(f"Epoch {self.epoch} Loss: {task_epoch_loss}")
 
             if epoch % evaluation_interval == 0:
-                self.predict([(head, test_loader) for head,_ , test_loader in heads_and_dataloaders])
+                self.predict([(head, test_loader) for head, _, test_loader in heads_and_dataloaders])
             if epoch % checkpoint_interval == 0:
                 self.save_checkpoint(os.path.join(self.model_storage_directory, f'{head}_checkpoint_{epoch}'))
 
@@ -242,7 +241,7 @@ class MultiTaskingBert():
                         #   its values into separate variables.
                         # log.info("Dataset loading from preprocessed data directory")
                         bert_input_ids, bert_token_type_ids, bert_attention_masks, \
-                        bert_sequence_lengths, correct_bert_labels, correct_spacy_labels, alignments, _ , \
+                        bert_sequence_lengths, correct_bert_labels, correct_spacy_labels, alignments, _, \
                         subword_sequences, label_sequences = batch
                         # log.info("Dataset loaded from preprocessed data directory")
 
@@ -250,7 +249,8 @@ class MultiTaskingBert():
                         bert_attention_masks = bert_attention_masks.to(device=self.device)
                         # log.info(f'bert_input_ids and attention masks sent to {self.device}')
 
-                        if isinstance(bert_token_type_ids, torch.Tensor):  # some tasks (ie. NER) do not need token types.
+                        if isinstance(bert_token_type_ids,
+                                      torch.Tensor):  # some tasks (ie. NER) do not need token types.
                             bert_token_type_ids = bert_token_type_ids.to(device=self.device)
                         else:
                             bert_token_type_ids = None
@@ -261,12 +261,13 @@ class MultiTaskingBert():
                                                                  )
                         # log.info('foward pass through transformers complete, sending embedding to linear layer')
                         subword_scores = head(all_hidden[self.transformer_layers])[0]
-                        batch_sequence_predictions = subword_scores.max(2)[1] #subword label predictions as label encodings.
+                        batch_sequence_predictions = subword_scores.max(2)[
+                            1]  # subword label predictions as label encodings.
                         subword_scores_softmax = softmax(subword_scores, dim=2)  # Get probabilities for all labels
-                        batch_sequence_probabilities = subword_scores_softmax.max(2)[0] # BEST subword predictions as label encodings.
+                        batch_sequence_probabilities = subword_scores_softmax.max(2)[
+                            0]  # BEST subword predictions as label encodings.
 
                         assert batch_sequence_probabilities.shape == batch_sequence_predictions.shape
-
 
                         for j in range(batch_sequence_predictions.shape[0]):
                             # retrieve only tokens from the sequence we care about.
@@ -274,8 +275,10 @@ class MultiTaskingBert():
                             #   They are there to fill the 512 length sequence for BERT.
                             #   [:int(bert_sequence_lengths[j].item())] gets the token sequence without padded tokens,
                             #   then stores the results as a numpy array on the CPU.
-                            bert_sequence_predictions = batch_sequence_predictions[j][:int(bert_sequence_lengths[j].item())].cpu().numpy()
-                            bert_sequence_probabilities = batch_sequence_probabilities[j][:int(bert_sequence_lengths[j].item())].cpu().numpy()
+                            bert_sequence_predictions = batch_sequence_predictions[j][
+                                                        :int(bert_sequence_lengths[j].item())].cpu().numpy()
+                            bert_sequence_probabilities = batch_sequence_probabilities[j][
+                                                          :int(bert_sequence_lengths[j].item())].cpu().numpy()
                             all_sequence_probs.append(bert_sequence_probabilities)
                             all_bert_sequence_predictions.append(bert_sequence_predictions)
 
@@ -285,22 +288,28 @@ class MultiTaskingBert():
                             #   the actual bert predicted labels.
                             # Variable `alignments[j].max().item()+1` is the length (int) of the original token sequence,
                             #     (including the [CLS] token at the beginning), plus one for the [SEP] token at the end.
-                            spacy_sequence_predictions = [head.config.labels.index('O')] * (alignments[j].max().item()+1)
+                            spacy_sequence_predictions = [head.config.labels.index('O')] * (
+                                        alignments[j].max().item() + 1)
                             spacy_scores_softmax = np.zeros_like(spacy_sequence_predictions).tolist()
                             assert len(spacy_sequence_predictions) == len(spacy_scores_softmax)
 
                             # range(1, ... - 1) accounts for bert padding tokens
                             for token_index in range(1, len(bert_sequence_predictions) - 1):
-                                spacy_sequence_predictions[alignments[j][token_index]] = bert_sequence_predictions[token_index]
-                                spacy_scores_softmax[alignments[j][token_index]] = bert_sequence_probabilities[token_index]  # TODO Each word is given the label of the LAST subword token?!
+                                spacy_sequence_predictions[alignments[j][token_index]] = bert_sequence_predictions[
+                                    token_index]
+                                spacy_scores_softmax[alignments[j][token_index]] = bert_sequence_probabilities[
+                                    token_index]  # TODO Each word is given the label of the LAST subword token?!
 
                             spacy_predictions_and_correct_labels.append(
-                                (spacy_sequence_predictions, correct_spacy_labels[j][:alignments[j].max().item()+1].tolist())
+                                (spacy_sequence_predictions,
+                                 correct_spacy_labels[j][:alignments[j].max().item() + 1].tolist())
                             )
-                            assert(len(spacy_sequence_predictions) == len(correct_spacy_labels[j][:alignments[j].max().item()+1].tolist()))
+                            assert (len(spacy_sequence_predictions) == len(
+                                correct_spacy_labels[j][:alignments[j].max().item() + 1].tolist()))
 
                     evaluate_ner(spacy_predictions_and_correct_labels,
-                                 head.config.labels, str(head), step=self.epoch, evaluate_bilou=head.config.evaluate_biluo)
+                                 head.config.labels, str(head), step=self.epoch,
+                                 evaluate_bilou=head.config.evaluate_biluo)
                     if not os.path.exists('bert_outputs'):
                         os.mkdir('bert_outputs')
                     torch.save(spacy_predictions_and_correct_labels,
@@ -310,7 +319,8 @@ class MultiTaskingBert():
                     torch.save(all_sequence_probs,
                                os.path.join('bert_outputs', f'{str(head)}_raw_bert_scores.pickle'))
                     torch.save(all_bert_sequence_predictions,
-                               os.path.join('bert_outputs', f'{str(head)}_raw_bert_sequence_predictions_pickle'))  # todo fix this: filename needs a dot, not _pickle
+                               os.path.join('bert_outputs',
+                                            f'{str(head)}_raw_bert_sequence_predictions_pickle'))  # todo fix this: filename needs a dot, not _pickle
 
                 if isinstance(head, CLSRegressionHead):
 
@@ -322,7 +332,8 @@ class MultiTaskingBert():
                         bert_input_ids = bert_input_ids.to(device=self.device)
                         bert_attention_masks = bert_attention_masks.to(device=self.device)
 
-                        if isinstance(bert_token_type_ids, torch.Tensor):  # some tasks (ie. NER) do not need token types.
+                        if isinstance(bert_token_type_ids,
+                                      torch.Tensor):  # some tasks (ie. NER) do not need token types.
                             bert_token_type_ids = bert_token_type_ids.to(device=self.device)
                         else:
                             bert_token_type_ids = None
@@ -350,7 +361,8 @@ class MultiTaskingBert():
                         bert_input_ids = bert_input_ids.to(device=self.device)
                         bert_attention_masks = bert_attention_masks.to(device=self.device)
 
-                        if isinstance(bert_token_type_ids, torch.Tensor):  # some tasks (ie. NER) do not need token types.
+                        if isinstance(bert_token_type_ids,
+                                      torch.Tensor):  # some tasks (ie. NER) do not need token types.
                             bert_token_type_ids = bert_token_type_ids.to(device=self.device)
                         else:
                             bert_token_type_ids = None
@@ -361,7 +373,7 @@ class MultiTaskingBert():
                                                                  )
                         predictions = head(hidden_states)[0]
 
-                        #.max will select the label index we want.
+                        # .max will select the label index we want.
                         predicted_labels = predicted_labels + predictions.max(1)[1].cpu().squeeze().tolist()
                         correct_labels = correct_labels + labels.max(1)[1].squeeze().tolist()
 
@@ -372,15 +384,3 @@ class MultiTaskingBert():
         self.bert.train()
         for head in self.heads:
             head.train()
-
-
-
-
-
-
-
-
-
-
-
-
