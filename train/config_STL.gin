@@ -1,30 +1,31 @@
-# Config for ablation experiments feb 1, 2022
+# Example config for single task learning
 
-multi_tasking_train.experiment_name = "STL_ent_eval"
+multi_tasking_train.experiment_name = "Single task learning"
 
 # Run Configuration
 multi_tasking_train.device = "cuda"
-multi_tasking_train.model_storage_directory = "/home/rodriguezne2/results/multitasking_transformers/bert"
-multi_tasking_train.ml_flow_directory = "/home/rodriguezne2/results/multitasking_transformers/mlflow"
+multi_tasking_train.model_storage_directory = ""  # Path to save models during training
+multi_tasking_train.ml_flow_directory = ""  # Path to save mlflow data and artifacts
 
 # Training
-multi_tasking_train.eval_on_dev = True
-multi_tasking_train.transformer_weights = "/home/rodriguezne2/models/biobert_v1.1_pubmed"
-multi_tasking_train.evaluation_interval = 1
-multi_tasking_train.checkpoint_interval = 1
-multi_tasking_train.num_epochs = 20
-multi_tasking_train.seed = 0
+multi_tasking_train.eval_on_dev = True  # Whether to evaluate on a development set
+multi_tasking_train.transformer_weights = ""  # pretrained model weights
+multi_tasking_train.evaluation_interval = 1  # Interval for evaluating the model on the test set
+multi_tasking_train.checkpoint_interval = 1  # Interal for saving model
+multi_tasking_train.num_epochs = 20  # Number of epoch to train for
+multi_tasking_train.seed = 0  # random seed
 multi_tasking_train.learning_rate = 5e-5
-multi_tasking_train.repeat_in_epoch_sampling = False  # downsample
-multi_tasking_train.use_pretrained_heads = True
-multi_tasking_train.write_predictions = True
+multi_tasking_train.repeat_in_epoch_sampling = False  # Setting to False downsamples the larger datasets
+multi_tasking_train.use_pretrained_heads = True  # Use pretrained classifier layers. If none are found, a new head will be trained.
+multi_tasking_train.write_predictions = True  # Whether to write model predictions
 
 # Data Loading
-multi_tasking_train.data_directory = '/home/rodriguezne2/projects/multitasking-transformers/multi_tasking_transformers/experiments/data'
-multi_tasking_train.ablation_amount = 0.0  # You can set multiple values in train.py
-multi_tasking_train.shuffle = True  # Shuffles the test/dev datasets on eval
+multi_tasking_train.data_directory = ""  # Path to preprocessed data in PyTorch Dataset compatible format (see documentation)
+multi_tasking_train.ablation_amount = 0.0  # You can set multiple values in train.py for data ablation
+multi_tasking_train.shuffle = True  # Shuffles the test/dev datasets on eval. (True recommended)
 multi_tasking_train.num_workers = 0
 
+# Example of dataset-specific configuration using the HUNER dataset
 get_huner_tasks.batch_size = 25
 get_huner_tasks.huner_datasets = {
     'cellline': [
@@ -62,30 +63,3 @@ get_huner_tasks.huner_datasets = {
         "scai_chemicals",
     ],
 }
-
-# Eval
-
-multi_tasking_test.device = "cuda"
-multi_tasking_test.experiment_name = "MTL_ent_eval"
-multi_tasking_test.run_directory = ""
-multi_tasking_test.eval_on_dev = False  # Set to False for eval on test set.
-multi_tasking_test.shuffle = False  # DISABLE DURING TESTING
-multi_tasking_test.biluo = False
-multi_tasking_test.ablation_amount = ""
-multi_tasking_test.run_id = {"0.25": "005435ec76d44970969ddf2a0eea3ee5",
-                             "0.5": "913fbbdde2e0420a8d4f1cffd6d381e8",
-                             "0.75": "687c6ceb9b7a4288a8625be474342597",
-                             "0.9": "e3fac2e4702c4bf6900a4f5168d91deb"}
-
-# multi_tasking_test.epoch_of_selected_model = 0  # model storage directories are 1-based
-# 0.860335
-#####################################################
-# These should stay the same after initial setup.   #
-#####################################################
-multi_tasking_test.num_workers = 0  # DATA LOADING. Used for Torch multiprocessing of DataLoader. Set >0 only if you're not loading token and label string representations. You'll run out of resources before it's all loaded.
-multi_tasking_test.ml_flow_directory = "/home/rodriguezne2/results/multitasking_transformers/mlflow"
-multi_tasking_test.model_storage_directory = ""
-multi_tasking_test.transformer_weights = ""
-multi_tasking_test.use_pretrained_heads = True  # Usually True, unless it's not. But probably still True though.
-multi_tasking_test.transformer_hidden_size = 768
-multi_tasking_test.seed = 0
