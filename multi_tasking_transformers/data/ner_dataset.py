@@ -4,6 +4,7 @@ import torch, os, pickle, warnings
 from typing import Tuple, List, Union
 # from clinical_data.ner import load_n2c2_2018_train_dev, load_n2c2_2018
 from spacy.gold import biluo_tags_from_offsets
+# from transformers import BertTokenizer
 from transformers import BertTokenizer, AlbertTokenizer
 
 """
@@ -36,6 +37,8 @@ class NERDataset(torch.utils.data.Dataset):
         return self.bert_input_ids.shape[0]
 
     def __getitem__(self, index: int):
+        # if type(index) == torch.Tensor:
+        #     index = index.item()
         # TODO add tokens to get item here
         # Load data and get label, pad with [] (cannot use None) to align with LM inputs (we don't need token types for subword classification).
         return self.bert_input_ids[index], [], self.bert_attention_masks[index], \

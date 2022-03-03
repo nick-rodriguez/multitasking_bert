@@ -1,3 +1,8 @@
+from seqeval.scheme import IOB2
+from time import time, strftime
+
+from pathlib import Path
+
 import gin, os, torch, logging, mlflow, numpy as np
 from typing import List, Tuple
 from transformers import BertModel, BertConfig, BertTokenizer, CONFIG_NAME, WEIGHTS_NAME
@@ -9,9 +14,16 @@ from multi_tasking_transformers.evaluation import evaluate_ner, evaluate_sts, ev
 from torch.utils.data import DataLoader
 from torch.nn.functional import softmax
 import torch
+from seqeval.metrics import performance_measure, classification_report
+from seqeval.metrics import f1_score as seqeval_f1_score
 
 # import torch.multiprocessing
 # torch.multiprocessing.set_sharing_strategy('file_system')
+
+'''
+Changes: 
+Added write_predictions to `MultiTaskingBert`. 
+'''
 
 log = logging.getLogger('root')
 
@@ -27,11 +39,17 @@ class MultiTaskingBert():
                  device='cuda',
                  learning_rate=5e-5,
                  transformer_layers=12,
-                 use_pretrained_heads=True):
+                 use_pretrained_heads=True,
+                 write_predictions=True,
+                 time_stamp=None):
         """
 
         :param model_directory: a directory path to the multi-tasking model. This contains bert weights and head weights.
         """
+
+        self.timestr = strftime("%Y%m%d%H%M%S") if not time_stamp else time_stamp
+        # mlflow.log_params({'prediction_id': self.timestr})
+        self.write_predictions = write_predictions
         self.transformer_weights = transformer_weights
         self.heads = heads
         self.model_storage_directory = model_storage_directory
@@ -52,7 +70,8 @@ class MultiTaskingBert():
 
         config.output_hidden_states = True
 
-        use_tf_model = 'biobert_v1' in self.transformer_weights or 'biobert_large' in self.transformer_weights
+        # use_tf_model = 'biobert_v1' in self.transformer_weights or 'biobert_large' in self.transformer_weights
+        use_tf_model = True
         self.bert = BertModel.from_pretrained(self.transformer_weights, config=config, from_tf=use_tf_model)
 
         for head in heads:
@@ -89,7 +108,7 @@ class MultiTaskingBert():
         if not os.path.exists(checkpoint_path):
             os.mkdir(checkpoint_path)
         else:
-            raise ValueError("Attempting to save checkpoint to an existing directory")
+            log.warning(f"Attempting to save checkpoint to an existing directory: {checkpoint_path}")
         log.info(f"Saving checkpoint: {checkpoint_path}")
         base = self.bert
 
@@ -109,7 +128,8 @@ class MultiTaskingBert():
             checkpoint_interval=1,
             repeat_in_epoch_sampling=True,
             use_loss_weight=False,
-            in_epoch_logging_and_saving=False):
+            in_epoch_logging_and_saving=False,
+            validation_heads_and_dataloaders=None):
         """
         Fits a multi tasking model on the given heads and dataloaders
         :param datasets:
@@ -122,13 +142,12 @@ class MultiTaskingBert():
         self.bert.train()
         self.bert.to(device=self.device)
         for head in self.heads:
-            head.to(device=self.device)
             head.train()
+            head.to(device=self.device)
+
+        # self.predict([(head, test_loader) for head, _, test_loader in heads_and_dataloaders])
 
         for epoch in range(1, num_epochs + 1):
-            # #TODO REMOVE ME
-            # if epoch == evaluation_interval:
-            #     self.predict([(head, test_loader) for head,_ , test_loader in heads_and_dataloaders])
 
             self.epoch += 1
 
@@ -204,24 +223,26 @@ class MultiTaskingBert():
             log.info(f"Epoch {self.epoch} Loss: {task_epoch_loss}")
 
             if epoch % evaluation_interval == 0:
-                self.predict([(head, test_loader) for head, _, test_loader in heads_and_dataloaders])
+                self.predict([(head, test_loader) for head, _, test_loader in heads_and_dataloaders], partition="dev")
+                self.predict([(head, test_loader) for head, _, test_loader in validation_heads_and_dataloaders],
+                             partition="test")
             if epoch % checkpoint_interval == 0:
-                self.save_checkpoint(os.path.join(self.model_storage_directory, f'{head}_checkpoint_{epoch}'))
+                current_checkpoint_path = Path(self.model_storage_directory) / str(head) / f'checkpoint_{epoch}'
+                current_checkpoint_path.mkdir(exist_ok=True, parents=True)
+                log.info(f'saving checkpoint to {str(current_checkpoint_path)}')
+                self.save_checkpoint(current_checkpoint_path)
 
-    def predict(self, heads_and_dataloaders: List[Tuple[TransformerHead, DataLoader]]):
+    def predict(self, heads_and_dataloaders: List[Tuple[TransformerHead, DataLoader]], partition="test"):
         """
         Predicts over the heads and dataloaders present.
         :param heads_and_dataloaders:
         :return:
         """
         self.bert.eval()
-        if not next(self.bert.parameters()).is_cuda:
-            self.bert.to(device=self.device)
-
+        self.bert.to(self.device)
         for head in self.heads:
-            if not next(head.parameters()).is_cuda:
-                head.to(device=self.device)
             head.eval()
+            head.to(self.device)
 
         with torch.no_grad():
             for head, dataloader in heads_and_dataloaders:
@@ -229,8 +250,12 @@ class MultiTaskingBert():
                 if isinstance(head, SubwordClassificationHead):
                     spacy_predictions_and_correct_labels = []
                     # log.info("Preparing to unpack dataset")
-                    all_sequence_probs = []
                     all_bert_sequence_predictions = []
+                    all_bert_sequence_labels = []
+                    all_bert_sequence_softmax = []
+                    all_spacy_softmax = []
+                    all_spacy_predictions = []
+                    all_spacy_labels = []
 
                     #############################
                     # Batch sequence prediction #
@@ -243,6 +268,7 @@ class MultiTaskingBert():
                         bert_input_ids, bert_token_type_ids, bert_attention_masks, \
                         bert_sequence_lengths, correct_bert_labels, correct_spacy_labels, alignments, _, \
                         subword_sequences, label_sequences = batch
+                        all_bert_sequence_labels.append(correct_bert_labels)
                         # log.info("Dataset loaded from preprocessed data directory")
 
                         bert_input_ids = bert_input_ids.to(device=self.device)
@@ -279,7 +305,7 @@ class MultiTaskingBert():
                                                         :int(bert_sequence_lengths[j].item())].cpu().numpy()
                             bert_sequence_probabilities = batch_sequence_probabilities[j][
                                                           :int(bert_sequence_lengths[j].item())].cpu().numpy()
-                            all_sequence_probs.append(bert_sequence_probabilities)
+                            all_bert_sequence_softmax.append(bert_sequence_probabilities)
                             all_bert_sequence_predictions.append(bert_sequence_predictions)
 
                             # array to store predictions relative to initial (spaCy) tokenization
@@ -289,38 +315,52 @@ class MultiTaskingBert():
                             # Variable `alignments[j].max().item()+1` is the length (int) of the original token sequence,
                             #     (including the [CLS] token at the beginning), plus one for the [SEP] token at the end.
                             spacy_sequence_predictions = [head.config.labels.index('O')] * (
-                                        alignments[j].max().item() + 1)
+                                    alignments[j].max().item() + 1)
                             spacy_scores_softmax = np.zeros_like(spacy_sequence_predictions).tolist()
                             assert len(spacy_sequence_predictions) == len(spacy_scores_softmax)
 
                             # range(1, ... - 1) accounts for bert padding tokens
-                            for token_index in range(1, len(bert_sequence_predictions) - 1):
+                            for token_index in reversed(range(1, len(bert_sequence_predictions) - 1)):
                                 spacy_sequence_predictions[alignments[j][token_index]] = bert_sequence_predictions[
                                     token_index]
                                 spacy_scores_softmax[alignments[j][token_index]] = bert_sequence_probabilities[
-                                    token_index]  # TODO Each word is given the label of the LAST subword token?!
+                                    token_index]
 
+                            ground_truth = correct_spacy_labels[j][:alignments[j].max().item() + 1].tolist()
                             spacy_predictions_and_correct_labels.append(
                                 (spacy_sequence_predictions,
-                                 correct_spacy_labels[j][:alignments[j].max().item() + 1].tolist())
+                                 ground_truth)
                             )
                             assert (len(spacy_sequence_predictions) == len(
-                                correct_spacy_labels[j][:alignments[j].max().item() + 1].tolist()))
+                                ground_truth))
+                            all_spacy_predictions.append(spacy_sequence_predictions)
+                            all_bert_sequence_softmax.append(spacy_scores_softmax)
+                            all_spacy_labels.append(ground_truth)
 
-                    evaluate_ner(spacy_predictions_and_correct_labels,
-                                 head.config.labels, str(head), step=self.epoch,
-                                 evaluate_bilou=head.config.evaluate_biluo)
-                    if not os.path.exists('bert_outputs'):
-                        os.mkdir('bert_outputs')
-                    torch.save(spacy_predictions_and_correct_labels,
-                               os.path.join('bert_outputs', f'{str(head)}_labels.pickle'))
-                    torch.save(spacy_scores_softmax,  # todo fix this: it's only saving the last batch.
-                               os.path.join('bert_outputs', f'{str(head)}_scores.pickle'))
-                    torch.save(all_sequence_probs,
-                               os.path.join('bert_outputs', f'{str(head)}_raw_bert_scores.pickle'))
-                    torch.save(all_bert_sequence_predictions,
-                               os.path.join('bert_outputs',
-                                            f'{str(head)}_raw_bert_sequence_predictions_pickle'))  # todo fix this: filename needs a dot, not _pickle
+                    self.evaluate_ner(head, partition, spacy_predictions_and_correct_labels)
+                    self.evaluate_ner_seq_eval(all_spacy_predictions, all_spacy_labels, head.config.labels, partition,
+                                               head_identifier=str(head))
+
+                    if self.write_predictions:
+                        current_prediction_path = Path('results') / self.timestr / partition / str(self.epoch) / str(
+                            head)
+                        current_prediction_path.mkdir(exist_ok=True, parents=True)
+                        log.info(f'Writing predictions to {str(current_prediction_path)}')
+
+                        torch.save(all_spacy_labels,
+                                   Path.joinpath(current_prediction_path, f'labels.pickle'))
+                        torch.save(all_spacy_predictions,
+                                   Path.joinpath(current_prediction_path, f'predictions.pickle'))
+                        torch.save(all_spacy_softmax,
+                                   Path.joinpath(current_prediction_path, f'scores.pickle'))
+                        torch.save(all_bert_sequence_softmax,
+                                   Path.joinpath(current_prediction_path, f'raw_bert_scores.pickle'))
+                        torch.save(all_bert_sequence_predictions,
+                                   Path.joinpath(current_prediction_path,
+                                                 f'raw_bert_sequence_predictions.pickle'))
+                        torch.save(all_bert_sequence_labels,
+                                   Path.joinpath(current_prediction_path,
+                                                 f'raw_bert_sequence_labels.pickle'))
 
                 if isinstance(head, CLSRegressionHead):
 
@@ -384,3 +424,43 @@ class MultiTaskingBert():
         self.bert.train()
         for head in self.heads:
             head.train()
+
+    def evaluate_ner(self, head, partition, spacy_predictions_and_correct_labels):
+        evaluate_ner(spacy_predictions_and_correct_labels,
+                     head.config.labels, str(head), step=self.epoch,
+                     evaluate_bilou=head.config.evaluate_biluo, partition=partition)
+
+    def evaluate_ner_seq_eval(self, batch_ner_labels, batch_ner_predictions, labels: List[str], partition,
+                              head_identifier):
+        id2label = {}
+        entity_labels = labels
+        for idx, label in enumerate(entity_labels):
+            if label.endswith('NP'):
+                label = label[:2] + head_identifier.split('_')[-1]
+            elif label == 'BERT_TOKEN':
+                label = 'O'
+            id2label[idx] = label
+        ner_ground_truth = [[id2label[idx] for idx in seq] for seq in batch_ner_labels]
+        ner_predictions = [[id2label[idx] for idx in seq] for seq in batch_ner_predictions]
+
+        # Get results
+        default_results = classification_report(y_true=ner_ground_truth, y_pred=ner_predictions,
+                                                output_dict=True, digits=3, mode='default',
+                                                scheme=IOB2)
+        default_results['performance'] = performance_measure(y_true=ner_ground_truth,
+                                                             y_pred=ner_predictions)
+        default_results = {metric_group1: {metric: float(value) for metric, value in metric_group2.items()} for
+                           metric_group1, metric_group2 in default_results.items()}
+
+        strict_results = classification_report(y_true=ner_ground_truth, y_pred=ner_predictions,
+                                               output_dict=True, digits=3, mode='strict',
+                                               scheme=IOB2)
+        strict_results['performance'] = performance_measure(y_true=ner_ground_truth,
+                                                            y_pred=ner_predictions)
+        strict_results = {metric_group1: {metric: float(value) for metric, value in metric_group2.items()} for
+                          metric_group1, metric_group2 in strict_results.items()}
+
+        mlflow.log_dict(dict(lenient=default_results, strict=strict_results),
+                        f"{partition}/{self.epoch}/{head_identifier}.json")
+
+

@@ -111,12 +111,13 @@ class SubwordClassificationHead(TransformerHead):
     This head defines a subword classification architecture
     """
 
-    def __init__(self, head_task, labels=None, hidden_size=768, hidden_dropout_prob=.1):
+    def __init__(self, head_task, labels=None, hidden_size=768, hidden_dropout_prob=.1, device='cuda'):
         super(SubwordClassificationHead, self).__init__(type(self).__name__,
                                                         head_task,
                                                         labels=labels,
                                                         hidden_size=hidden_size,
-                                                        hidden_dropout_prob=hidden_dropout_prob)
+                                                        hidden_dropout_prob=hidden_dropout_prob,
+                                                        )
         self.entity_labels = self.config.labels
         self.config.evaluate_biluo = False
         self.classifier = nn.Linear(hidden_size, len(self.entity_labels))
