@@ -8,14 +8,9 @@ import time
 import torch
 from torch.utils.data import DataLoader, RandomSampler
 
-
 from multi_tasking_transformers.data import NERDataset
 from multi_tasking_transformers.heads import SubwordClassificationHead
 from multi_tasking_transformers.multitaskers import MultiTaskingBert
-
-''' Changes from bml_20200521_nr_0:
-- added data_directory as a parameter to train()
-'''
 
 log = logging.getLogger('root')
 
@@ -153,7 +148,8 @@ def train(experiment_name,
     validation_heads_and_dataloaders = prepare_datasets(ablation_amount, data_directory, num_workers, shuffle,
                                                         transformer_dropout_prob, transformer_hidden_size,
                                                         eval_on_dev=False)  # uses test set for training eval
-    validation_heads_and_dataloaders = [(head, training_set, test_set) for (head, training_set, _), (_, _, test_set) in zip(heads_and_datasets, validation_heads_and_dataloaders)]
+    validation_heads_and_dataloaders = [(head, training_set, test_set) for (head, training_set, _), (_, _, test_set) in
+                                        zip(heads_and_datasets, validation_heads_and_dataloaders)]
 
     print(f'Data loaded. Begin Training {len(heads_and_datasets)} Tasks.')
     print(f'ABLATION AMOUNT {ablation_amount} ({(1 - ablation_amount) * 100} percent of data retained')
@@ -249,7 +245,6 @@ if __name__ == "__main__":
     setup_logger()
     train()
     mlflow.end_run()
-
 
 
 @atexit.register
